@@ -1,0 +1,52 @@
+name: Build and push Docker Image
+
+on:
+  push:
+    branches: [ "main" ]
+env:
+  DOCKER_REGISTRY: docker-registry.infra-devops.svc.cluster.local:5000
+jobs:
+  dockerize:
+    runs-on: arc-runner-set-dind
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-config-inline: |
+            [registry."docker-registry.infra-devops.svc.cluster.local:5000"]
+              insecure = false
+              ca = ["/home/runner/_work/demo/demo/.github/workflows/ca.crt"]
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ${{ env.DOCKER_REGISTRY }}/demo:${{ github.sha }}
+  delivery:
+    runs-on: arc-runner-set-dind
+    needs: dockerize
+    if: ${{ github.event_name != 'push' || github.actor != 'github-actions[bot]' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+          fetch-depth: 0  # Fetch all history for accurate git operations
+      - name: Install yq
+        run: |
+          sudo apt update -qq
+          sudo apt install -y -qq curl
+          sudo curl -L https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+      - name: Update Deployment with new image tag
+        run: |
+          yq '(. | select(.kind == "Deployment").spec.template.spec.containers[0].image) |= "${{ env.DOCKER_REGISTRY }}/demo:${{ github.sha }}"' -i deployment/deployment.yml
+      - name: Commit changes
+        uses: EndBug/add-and-commit@v9
+        with:
+          message: "Update demo image tag to ${{ github.sha }}"
+          add: 'deployment/deployment.yml'
+          author_name: 'github-actions[bot]'
+          author_email: 'github-actions[bot]@users.noreply.github.com'
+          committer_name: 'github-actions[bot]'
+          committer_email: 'github-actions[bot]@users.noreply.github.com'
+          token: ${{ secrets.PAT_TOKEN }}
